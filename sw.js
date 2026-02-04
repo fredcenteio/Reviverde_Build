@@ -4,25 +4,31 @@ const IMAGE_CACHE = 'reviverde-images-v2';
 const API_CACHE = 'reviverde-api-v2';
 
 const urlsToCache = [
-  '/',
-  '/quem-somos',
-  '/o-que-fazemos',
-  '/projetos',
-  '/como-participar',
-  '/contato',
-  '/styles.css',
-  '/main.js',
-  '/polyfills.js',
-  '/runtime.js',
   '/ReviVerde_logo_transparent.png',
-  '/manifest.json'
+  '/manifest.json',
+  '/favicon.ico'
 ];
 
 // Install event - cache static assets
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(STATIC_CACHE)
-      .then(cache => cache.addAll(urlsToCache))
+      .then(cache => {
+        // Add each URL individually to handle failures gracefully
+        return Promise.allSettled(
+          urlsToCache.map(url => {
+            return fetch(url).then(response => {
+              if (response.ok) {
+                return cache.put(url, response);
+              }
+              throw new Error(`Failed to fetch ${url}: ${response.status}`);
+            }).catch(error => {
+              console.warn(`Failed to cache ${url}:`, error);
+              // Don't throw - allow service worker to install even if some resources fail
+            });
+          })
+        );
+      })
       .then(() => self.skipWaiting())
   );
 });
@@ -46,12 +52,17 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // Cache-first strategy for static assets
+  // Cache-first strategy for static assets (but not JS chunks)
   if (event.request.url.includes('/assets/') ||
       event.request.url.includes('.css') ||
-      event.request.url.includes('.js') ||
       event.request.url.includes('.woff2')) {
     event.respondWith(cacheFirst(event.request, STATIC_CACHE));
+    return;
+  }
+
+  // Network-first for JS files (chunks can change)
+  if (event.request.url.includes('.js')) {
+    event.respondWith(networkFirst(event.request, STATIC_CACHE));
     return;
   }
 
@@ -109,7 +120,7 @@ async function cacheFirst(request, cacheName) {
 async function networkFirst(request, cacheName) {
   try {
     const networkResponse = await fetch(request);
-    if (networkResponse.ok) {
+    if (networkResponse.ok && request.method === 'GET') {
       const cache = await caches.open(cacheName);
       cache.put(request, networkResponse.clone());
     }
